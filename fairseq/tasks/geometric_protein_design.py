@@ -12,6 +12,7 @@ from typing import Optional
 from argparse import Namespace
 from omegaconf import II
 import math
+from copy import deepcopy
 
 import torch
 import torch.nn as nn
@@ -293,7 +294,7 @@ class GeometricProteinDesignTask(FairseqTask):
                 ec = sample["ec"]
                 centers = sample["center"]
 
-                encoder_out, coords, _ = model(src_tokens,
+                encoder_out, coords, center = model(src_tokens,
                                             source_input["src_lengths"],
                                             target_input["target_coor"],
                                             motif, ec["ec1"], ec["ec2"], ec["ec3"], ec["ec4"])
@@ -302,7 +303,16 @@ class GeometricProteinDesignTask(FairseqTask):
                 encoder_out[:, :, 24:] = -math.inf
                 coords = coords.reshape(batch_size, -1, 3)
                 target_coor = sample["target_input"]["target_coor"]
-                rmsd = torch.sqrt(torch.sum(torch.sum(torch.square(coords - target_coor), dim=-1) * output_mask, dim=-1))
+
+                # apply same transformation for ground truth data
+                # CoM
+                target_coor = target_coor - center
+                # scale coordinates
+                target_coor = target_coor * model.coordinate_scaling
+
+                rmsd = torch.sum(torch.sqrt(torch.sum(torch.square(coords - target_coor), dim=-1)) * motif["input"], dim=-1) / motif["input"].sum()
+                # rmsd = torch.sqrt(torch.sum(torch.sum(torch.square(coords - target_coor), dim=-1) * motif["input"], dim=-1))
+                aar = ((src_tokens == encoder_out.argmax(-1)) * motif["input"]).sum() / motif["input"].sum()
 
                 coords = (output_mask.unsqueeze(-1) * coords + (output_mask.unsqueeze(-1) == 0).int() * target_coor)[:, 1: -1, :]
                 coords = coords + centers.unsqueeze(1)
@@ -311,7 +321,7 @@ class GeometricProteinDesignTask(FairseqTask):
                 indexes = output_mask * indexes + (output_mask == 0).int() * source_input["src_tokens"]
                 srcs = [model.encoder.alphabet.string(source_input["src_tokens"][i]) for i in range(source_input["src_tokens"].size(0))]
                 strings = [model.encoder.alphabet.string(indexes[i]) for i in range(len(indexes))]
-                return loss, sample_size, logging_output, strings, srcs, pdbs, coords, target_coor, rmsd
+                return loss, sample_size, logging_output, strings, srcs, pdbs, coords, target_coor, rmsd, aar
         return loss, sample_size, logging_output
 
     def reduce_metrics(self, logging_outputs, criterion):

@@ -12,6 +12,8 @@ import logging
 import math
 import os
 import sys
+# os.chdir('/home/ubuntu/EnzyGen')
+# sys.path.append('/home/ubuntu/EnzyGen')
 from typing import Dict, Optional, Any, List, Tuple, Callable
 import warnings
 warnings.filterwarnings('ignore')
@@ -510,14 +512,14 @@ def cli_main(
         server = PlasmaStore(path=cfg.common.plasma_path)
         logger.info(f"Started plasma server pid {server.server.pid} {cfg.common.plasma_path}")
 
-    # main(cfg)
-    if args.profile:
-        with torch.cuda.profiler.profile():
-            with torch.autograd.profiler.emit_nvtx():
+    main(cfg, 0, 1)
+    # if args.profile:
+    #     with torch.cuda.profiler.profile():
+    #         with torch.autograd.profiler.emit_nvtx():
 
-                distributed_utils.call_main(cfg, main)
-    else:
-        distributed_utils.call_main(cfg, main)
+    #             distributed_utils.call_main(cfg, main)
+    # else:
+    #     distributed_utils.call_main(cfg, main)
 
 
 

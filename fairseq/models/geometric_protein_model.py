@@ -188,6 +188,18 @@ class GeometricProteinModel(TransformerModel):
             default=30,
             help="number of k nearest neighbors",
         )
+        parser.add_argument(
+            "--tanh",
+            type=bool,
+            default=False,
+            help="use tanh activation function after coords update",
+        )
+        parser.add_argument(
+            "--coordinate-scaling",
+            type=float,
+            default=1,
+            help="scale protein coordinate by a value",
+        )
 
     def __init__(self, args, encoder, decoder):
         super().__init__(args, encoder, decoder)
@@ -202,6 +214,7 @@ class GeometricProteinModel(TransformerModel):
         nn.init.normal_(self.ec3_embeddings.weight, mean=0, std=args.encoder_embed_dim ** -0.5)
         self.ec4_embeddings = nn.Embedding(3157, args.encoder_embed_dim)
         nn.init.normal_(self.ec4_embeddings.weight, mean=0, std=args.encoder_embed_dim ** -0.5)
+        self.coordinate_scaling = args.coordinate_scaling
 
     @classmethod
     def build_model(self, args, task, cls_dictionary=MaskedLMDictionary):
@@ -223,10 +236,11 @@ class GeometricProteinModel(TransformerModel):
     @classmethod
     def build_decoder(cls, args, tgt_dict, embed_tokens):
         decoder = EGNN(in_node_nf=args.encoder_embed_dim, hidden_nf=args.encoder_embed_dim, out_node_nf=3,
-                       in_edge_nf=0, device=device, n_layers=args.decoder_layers, attention=True, mode=args.egnn_mode)
+                       in_edge_nf=0, device=device, n_layers=args.decoder_layers, attention=True, mode=args.egnn_mode, tanh=args.tanh)
         return decoder
 
     def forward(self, src_tokens, src_lengths, coords, motifs, ec1, ec2, ec3, ec4):
+        coords = coords.clone()
         need_head_weights = False
         return_contacts = False
         if return_contacts:
@@ -285,6 +299,14 @@ class GeometricProteinModel(TransformerModel):
                     coords[i][j][2] = coords[i][j - 1][2] + 3.75 * np.cos(theta)
         coords = coords.reshape(-1, coords.size()[-1])  # [batch * length, 3]
 
+        # CoM
+        coords = coords.view(batch_size, -1, 3)
+        center = coords.mean(-2).unsqueeze(-2)
+        coords = coords - center
+        # scale coordinates
+        coords = coords * self.coordinate_scaling
+        coords = coords.view(-1, 3)
+
         for layer_idx, layer in enumerate(self.encoder.layers):
             x, attn = layer(
                 x,
@@ -297,8 +319,8 @@ class GeometricProteinModel(TransformerModel):
                 # (H, B, T, T) => (B, H, T, T)
                 attn_weights.append(attn.transpose(1, 0))
 
-            if (layer_idx + 1) % 11 == 0:
-                decoder_layer_idx = int(layer_idx/11)
+            if (layer_idx + 1) % 4 == 0:
+                decoder_layer_idx = int(layer_idx/4)
                 x = x.transpose(0, 1).reshape(-1, x.size()[-1])  # [batch * length, hidden]
                 # x: B * L * dim; edges: B * L * 30; coords: B * L * 3
                 coords = coords.view(batch_size, -1, coords.size()[-1])  # [batch * length, 3]
@@ -307,7 +329,8 @@ class GeometricProteinModel(TransformerModel):
                 # edges = get_edges_batch(n_nodes, batch_size)
                 x, coords, _ = self.decoder._modules["gcl_%d" % int(decoder_layer_idx)](x, edges, coords,
                                                                                         edge_attr=None,
-                                                                                        batch_size=batch_size, k=self.k)
+                                                                                        batch_size=batch_size, k=self.k,
+                                                                                        mask=input_mask.reshape(-1))
                 x = x.reshape(batch_size, -1, x.size()[-1]).transpose(0, 1)
 
         x = self.encoder.emb_layer_norm_after(x)
@@ -321,7 +344,11 @@ class GeometricProteinModel(TransformerModel):
 
         result = {"logits": x, "representations": hidden_representations, "encoder_embedding": embed}
         encoder_prob = F.softmax(x, dim=-1)
-        return encoder_prob, coords.view(batch_size, -1, 3)
+
+        # unshift CoM
+        coords = coords.view(batch_size, -1, 3)
+
+        return encoder_prob, coords, center
 
     def max_positions(self):
         """Maximum length supported by the model."""
@@ -363,6 +390,7 @@ class GeometricProteinSubstrateModel(GeometricProteinModel):
         self.score = nn.Linear(args.encoder_embed_dim * 2, 2)
 
     def forward(self, src_tokens, src_lengths, coords, motifs, ec1, ec2, ec3, ec4, substrate_coor=None, substrate_atom=None):
+        coords = coords.clone()
         need_head_weights = False
         return_contacts = False
         if return_contacts:
@@ -433,8 +461,8 @@ class GeometricProteinSubstrateModel(GeometricProteinModel):
                 # (H, B, T, T) => (B, H, T, T)
                 attn_weights.append(attn.transpose(1, 0))
 
-            if (layer_idx + 1) % 11 == 0:
-                decoder_layer_idx = int(layer_idx/11)
+            if (layer_idx + 1) % 4 == 0:
+                decoder_layer_idx = int(layer_idx/4)
                 x = x.transpose(0, 1).reshape(-1, x.size()[-1])  # [batch * length, hidden]
                 # x: B * L * dim; edges: B * L * 30; coords: B * L * 3
                 coords = coords.view(batch_size, -1, coords.size()[-1])  # [batch * length, 3]

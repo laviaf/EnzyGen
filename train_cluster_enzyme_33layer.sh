@@ -1,25 +1,27 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=0
 
-data_path=data/enzyme_substrate_data_lucky_best.json
+data_path=data/enzyme_substrate_data_lucky_best_rm_all_mask.json
 
 local_root=model_path
-pretrained_model="esm2_t33_650M_UR50D"
-output_path=${local_root}/33layer_model
+pretrained_model="esm2_t12_35M_UR50D"
+output_path=${local_root}/enzygen_12layers_scale_coords
 
-python3 -m torch.distributed.launch fairseq_cli/train.py ${data_path} \
+python3 fairseq_cli/train.py ${data_path} \
 --profile \
 --num-workers 0 \
---distributed-world-size 8 \
+--distributed-world-size 1 \
 --save-dir ${output_path} \
 --task geometric_protein_design \
 --dataset-impl-source "raw" \
 --dataset-impl-target "coor" \
 --criterion geometric_protein_loss --encoder-factor 1.0 --decoder-factor 1.0 \
 --arch geometric_protein_model_esm \
---encoder-embed-dim 1280 \
+--encoder-embed-dim 480 \
 --egnn-mode "rm-node" \
+--tanh False \
+--coordinate-scaling 0.1 \
 --decoder-layers 3 \
 --pretrained-esm-model ${pretrained_model} \
 --knn 30 \
@@ -28,7 +30,7 @@ python3 -m torch.distributed.launch fairseq_cli/train.py ${data_path} \
 --lr 3e-4 --lr-scheduler inverse_sqrt \
 --stop-min-lr '1e-10' --warmup-updates 4000 \
 --warmup-init-lr '5e-5' \
---clip-norm 0.0001 \
+--clip-norm 10 \
 --ddp-backend legacy_ddp \
 --log-format 'simple' --log-interval 10 \
 --max-tokens 1024 \

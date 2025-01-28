@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+import random
 
 import numpy as np
 import torch
@@ -328,6 +329,48 @@ class ProteinDataset(FairseqDataset):
         sub_atom = self.sub_atom[index]
         sub_coor = self.sub_coor[index]
         sub_binding = self.binding[index]
+
+        # # adapt protein pretrain task
+        # sequence = motif_item
+        # np.random.seed(0)
+        # random.seed(0)
+        # # 80% of the time sample from beta(3, 9)
+        # if np.random.rand() < 0.8:
+        #     mask_percentage = np.random.beta(3, 9)
+        # # 20% of the time sample from uniform(0, 1)
+        # else:
+        #     mask_percentage = np.random.uniform(0, 1)
+        # min_span_len, max_span_len = 1, 20
+        # L = len(sequence)
+        # M = max(min(round(L * mask_percentage), L), 1)
+        # masked_tokens = 0
+        # spans = []
+        # input_mask = torch.zeros_like(sequence)
+        # while masked_tokens < M:
+        #     # span_length = random.randint(min_span_len, max_span_len)
+        #     span_length = np.random.poisson(5)
+        #     if not min_span_len <= span_length <= max_span_len:
+        #         continue
+            
+        #     if masked_tokens + span_length > M:
+        #         span_length = M - masked_tokens
+            
+        #     start_pos = random.randint(1, L - span_length - 1)
+            
+        #     # Ensure no overlap
+        #     overlap = any(start <= start_pos < start + length or start <= start_pos + span_length - 1 < start + length
+        #                 for start, length in spans)
+        #     if not overlap:
+        #         spans.append((start_pos, span_length))
+        #         masked_tokens += span_length
+        #         input_mask[start_pos:start_pos + span_length] = 1
+        # motif_item = input_mask
+
+        # # CoM
+        # mask = (input_mask[1: -1] == 0).int().unsqueeze(-1)
+        # center = torch.sum(tgt_item * mask, dim=0) / mask.sum()
+        # tgt_item = tgt_item - center
+        # tgt_item = torch.cat([torch.tensor([[0, 0, 0]]), tgt_item, torch.tensor([[0, 0, 0]])], dim=0)
 
         example = {
             "id": index,

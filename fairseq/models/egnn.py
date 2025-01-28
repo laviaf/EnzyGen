@@ -223,7 +223,7 @@ class E_GCL_RM_Node(nn.Module):
             out = x + self.node_gate(agg) * agg
         return out, agg
 
-    def coord_model(self, coord, edge_index, coord_diff, edge_feat, batch_size, k):
+    def coord_model(self, coord, edge_index, coord_diff, edge_feat, batch_size, k, mask=None):
         row, col = edge_index
         # row = row.to(device)
         coord_diff = coord_diff.to(device)
@@ -237,7 +237,11 @@ class E_GCL_RM_Node(nn.Module):
             # agg = unsorted_segment_mean(trans, row, num_segments=coord.size(0))
         else:
             raise Exception('Wrong coords_agg parameter' % self.coords_agg)
-        coord = coord + agg
+        
+        if mask is not None:
+            coord = coord + agg * mask[:, None]
+        else:
+            coord = coord + agg
         return coord
 
     def coord2radial(self, edge_index, coord):
@@ -251,7 +255,7 @@ class E_GCL_RM_Node(nn.Module):
 
         return radial, coord_diff
 
-    def forward(self, h, edge_index, coord, edge_attr=None, node_attr=None, batch_size=1, k=30):
+    def forward(self, h, edge_index, coord, edge_attr=None, node_attr=None, batch_size=1, k=30, mask=None):
         """
         h: [batch * length, 320]
         edges: [B * L * L, B * L * L]
@@ -261,7 +265,157 @@ class E_GCL_RM_Node(nn.Module):
         radial, coord_diff = self.coord2radial(edge_index, coord)   # [B * L * 30], [B * L * 30, 3]
 
         edge_feat = self.edge_model(h[row], h[col], radial, edge_attr, batch_size, k)   # m_{ij}, [B * L * 30, dim]
-        coord = self.coord_model(coord, edge_index, coord_diff, edge_feat, batch_size, k)
+        coord = self.coord_model(coord, edge_index, coord_diff, edge_feat, batch_size, k, mask)
+        h, agg = self.node_model(h, edge_index, edge_feat, node_attr, batch_size, k)
+
+        return h, coord, edge_attr
+
+
+class E_GCL_PDB(nn.Module):
+    """
+    E(n) Equivariant Convolutional Layer
+    re
+    """
+
+    def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d=0, act_fn=nn.SiLU(), residual=True, attention=False,
+                 normalize=False, coords_agg='mean', tanh=False):
+        super(E_GCL_PDB, self).__init__()
+        input_edge = input_nf * 2
+        self.residual = residual
+        self.attention = attention
+        self.normalize = normalize
+        self.coords_agg = coords_agg
+        self.tanh = tanh
+        self.epsilon = 1e-8
+        edge_coords_nf = 1
+
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(input_edge + edge_coords_nf + edges_in_d, hidden_nf),
+            act_fn,
+            nn.Linear(hidden_nf, hidden_nf),
+            act_fn)
+
+        # layer = nn.Linear(hidden_nf, 1, bias=False)
+        # torch.nn.init.xavier_uniform_(layer.weight, gain=0.001)
+
+        # coord_mlp = []
+        # coord_mlp.append(nn.Linear(hidden_nf, hidden_nf))
+        # coord_mlp.append(act_fn)
+        # coord_mlp.append(layer)
+        # if self.tanh:
+        #     coord_mlp.append(nn.Tanh())
+        # self.coord_mlp = nn.Sequential(*coord_mlp)
+
+        coord_mlp = []
+        layer = nn.Linear(hidden_nf, hidden_nf)
+        torch.nn.init.xavier_uniform_(layer.weight, gain=0.01)
+        coord_mlp.append(layer)
+        coord_mlp.append(act_fn)
+        layer = nn.Linear(hidden_nf, 1)
+        torch.nn.init.xavier_uniform_(layer.weight, gain=0.01)
+        coord_mlp.append(layer)
+        if self.tanh:
+            coord_mlp.append(nn.Tanh())
+        self.coord_mlp = nn.Sequential(*coord_mlp)
+
+        self.node_gate = nn.Sequential(
+            nn.Linear(hidden_nf, hidden_nf),
+            nn.ReLU(),
+            nn.Linear(hidden_nf, hidden_nf),
+            nn.Sigmoid()
+        )
+        # self.node_gate = nn.Sequential(
+        #     nn.Linear(hidden_nf, hidden_nf),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_nf, hidden_nf),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_nf, hidden_nf),
+        #     nn.Sigmoid()
+        # )
+
+        if self.attention:
+            self.att_mlp = nn.Sequential(
+                nn.Linear(hidden_nf, 1))
+
+    def edge_model(self, source, target, radial, edge_attr, edge_index, batch_size, k, n_nodes=None):
+        # if edge_attr is None:  # Unused.
+        #     out = torch.cat([source, target, radial], dim=1).to(device)
+        # else:
+        #     out = torch.cat([source, target, radial, edge_attr], dim=1).to(device)
+        # computing m_{ij}
+        out = torch.cat([source, target, radial], dim=1).to(device)
+        out = self.edge_mlp(out.float())
+        # need to use softmax to normalize
+        if self.attention:
+            attn = self.att_mlp(out)
+            # att_val = torch.softmax(attn.view(batch_size, -1, k), dim=-1).view(-1, 1)
+            att_val = torch.softmax(attn.view(-1, k), dim=-1).view(-1, 1)
+            out = out * att_val
+        return out
+
+    def node_model(self, x, edge_index, edge_attr, node_attr, batch_size, k):
+        row, col = edge_index
+        # row = row.to(device)
+        # dim = edge_attr.size(-1)
+        # edge_attr = edge_attr.view(batch_size, -1, k, dim)
+        # agg = torch.sum(edge_attr, dim=2).view(-1, dim)  # gathered information from K neareast neighbors
+        agg = unsorted_segment_sum(edge_attr, row, num_segments=x.size(0))
+        out = x
+        if self.residual:
+            out = x + self.node_gate(agg) * agg
+        return out, agg
+
+    def coord_model(self, coord, edge_index, coord_diff, edge_feat, batch_size, k, mask=None):
+        row, col = edge_index
+        # row = row.to(device)
+        coord_diff = coord_diff.to(device)
+        trans = coord_diff * self.coord_mlp(edge_feat)  # [B * L * 30, 3]
+
+        # trans = trans.view(batch_size, -1, k, 3)
+        # if self.coords_agg == 'sum':
+        #     agg = torch.sum(trans, dim=2).view(-1, 3)
+        #     # agg = unsorted_segment_sum(trans, row, num_segments=coord.size(0))
+        # elif self.coords_agg == 'mean':
+        #     agg = torch.mean(trans, dim=2).view(-1, 3)
+        #     # agg = unsorted_segment_mean(trans, row, num_segments=coord.size(0))
+        # else:
+        #     raise Exception('Wrong coords_agg parameter' % self.coords_agg)
+
+        if self.coords_agg == 'sum':
+            agg = unsorted_segment_sum(trans, row, num_segments=coord.size(0))
+        elif self.coords_agg == 'mean':
+            agg = unsorted_segment_mean(trans, row, num_segments=coord.size(0))
+        else:
+            raise Exception('Wrong coords_agg parameter' % self.coords_agg)
+
+        if mask is not None:
+            coord = coord + agg * mask[:, None]
+        else:
+            coord = coord + agg
+        return coord
+
+    def coord2radial(self, edge_index, coord):
+        row, col = edge_index
+        coord_diff = coord[row] - coord[col]
+        radial = torch.sum(coord_diff**2, 1).unsqueeze(1).to(device)  # [KNN]
+
+        if self.normalize:
+            norm = torch.sqrt(radial).detach() + self.epsilon
+            coord_diff = coord_diff / norm
+
+        return radial, coord_diff
+
+    def forward(self, h, edge_index, coord, edge_attr=None, node_attr=None, batch_size=1, k=30, mask=None):
+        """
+        h: [batch * length, 320]
+        edges: [B * L * L, B * L * L]
+        coord: [batch * length, 3]
+        """
+        row, col = edge_index
+        radial, coord_diff = self.coord2radial(edge_index, coord)   # [B * L * 30], [B * L * 30, 3]
+
+        edge_feat = self.edge_model(h[row], h[col], radial, edge_attr, edge_index, batch_size, k, coord.size(0))   # m_{ij}, [B * L * 30, dim]
+        coord = self.coord_model(coord, edge_index, coord_diff, edge_feat, batch_size, k, mask)
         h, agg = self.node_model(h, edge_index, edge_feat, node_attr, batch_size, k)
 
         return h, coord, edge_attr
@@ -490,6 +644,12 @@ class EGNN(nn.Module):
                                                            edges_in_d=in_edge_nf, act_fn=act_fn, residual=residual,
                                                            attention=attention, normalize=normalize, tanh=tanh,
                                                            coords_agg="sum"))
+        elif self.mode == "pdb-pretrain":
+            for i in range(0, n_layers):
+                self.add_module("gcl_%d" % i, E_GCL_PDB(self.hidden_nf, self.hidden_nf, self.hidden_nf,
+                                                            edges_in_d=in_edge_nf, act_fn=act_fn, residual=residual,
+                                                            attention=attention, normalize=normalize, tanh=tanh,
+                                                            coords_agg="sum"))
         else:
             raise Exception("No EGNN mode: {}!".format(self.mode))
         self.to(self.device)

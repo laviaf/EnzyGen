@@ -7,6 +7,8 @@
 import logging
 import os
 import sys
+os.chdir('/home/ubuntu/EnzyGen')
+sys.path.append('/home/ubuntu/EnzyGen')
 import time
 from argparse import Namespace
 from itertools import chain
@@ -121,6 +123,7 @@ def main(cfg: DictConfig, override_args=None):
         strings = []
         srcs = []
         rmsd = []
+        aar = []
 
         fw_gen = open(os.path.join(cfg.common_eval.results_path, "protein.txt"), "w")
         fw_src = open(os.path.join(cfg.common_eval.results_path, "src.seq.txt"), "w")
@@ -128,13 +131,14 @@ def main(cfg: DictConfig, override_args=None):
 
         for i, sample in enumerate(progress):
             sample = utils.move_to_cuda(sample) if use_cuda else sample
-            _loss, _sample_size, log_output, _strings, _srcs, pdbs, coords, target_coors, _rmsd = task.valid_step(sample, model, criterion)
+            _loss, _sample_size, log_output, _strings, _srcs, pdbs, coords, target_coors, _rmsd, _aar = task.valid_step(sample, model, criterion)
 
             strings.extend(_strings)
             progress.log(log_output, step=i)
             log_outputs.append(log_output)
             srcs.extend(_srcs)
             rmsd.extend(_rmsd.cpu())
+            aar.append(_aar.cpu())
 
             for string in _strings:
                 fw_gen.write(string + "\n")
@@ -174,6 +178,8 @@ def main(cfg: DictConfig, override_args=None):
         print("inference time: {}".format(time.time()-start))
         progress.print(log_output, tag=subset, step=i)
         print("coordinate loss: {}".format(np.mean(rmsd)))
+        torch.save(rmsd, f'{cfg.common_eval.results_path}/rmsd.pt')
+        torch.save(aar, f'{cfg.common_eval.results_path}/aar.pt')
 
 
 def cli_main():
